@@ -2,29 +2,44 @@ package client
 
 import (
 	"bytes"
-	"errors"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"log"
+	"math/rand"
+	"net/http"
 )
-
-var errBufTooSmall = errors.New("buffer is too small to fit a sigle message")
 
 const defaultScratchSizew = 64 * 1024
 
 type Simple struct {
 	addrs []string
-
-	buf     bytes.Buffer
-	restBuf bytes.Buffer
+	cl    *http.Client
+	off   uint64
 }
 
 func NewSimple(addrs []string) *Simple {
 	return &Simple{
 		addrs: addrs,
+		cl:    &http.Client{},
 	}
 }
 
 func (s *Simple) Send(msgs []byte) error {
-	_, err := s.buf.Write(msgs)
-	return err
+	resp, err := s.cl.Post(s.addrs[0]+"/write", "application/octet-stream", bytes.NewReader(msgs))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var b bytes.Buffer
+		io.Copy(&b, resp.Body)
+		return fmt.Errorf("sending data: http code %d, %s", resp.StatusCode, b.String())
+	}
+
+	io.Copy(ioutil.Discard, resp.Body)
+	return nil
 }
 
 func (s *Simple) Receive(scratch []byte) ([]byte, error) {
@@ -32,52 +47,56 @@ func (s *Simple) Receive(scratch []byte) ([]byte, error) {
 		scratch = make([]byte, defaultScratchSizew)
 	}
 
-	startOff := 0
+	addrIdx := rand.Intn(len(s.addrs))
+	addr := s.addrs[addrIdx]
+	readUrl := fmt.Sprintf("%s/read?off=%d&maxSize=%d", addr, s.off, len(scratch))
 
-	if s.restBuf.Len() > 0 {
-		if s.restBuf.Len() >= len(scratch) {
-			return nil, errBufTooSmall
-		}
+	resp, err := s.cl.Get(readUrl)
+	if err != nil {
+		return nil, err
+	}
 
-		n, err := s.restBuf.Read(scratch)
-		if err != nil {
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var b bytes.Buffer
+		io.Copy(&b, resp.Body)
+		return nil, fmt.Errorf("get data: http code %d, %s", resp.StatusCode, b.String())
+	}
+
+	b := bytes.NewBuffer(scratch[0:0])
+	_, err = io.Copy(b, resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// 0 bytes read but no errors means the end of file by convention.
+	if b.Len() == 0 {
+		log.Println("0 bytes read but no errors means the end of file by convention.")
+		if err := s.ackCurrentChunk(addr); err != nil {
 			return nil, err
 		}
-
-		s.restBuf.Reset()
-		startOff += n
+		return nil, io.EOF
 	}
 
-	n, err := s.buf.Read(scratch[startOff:])
-	if err != nil {
-		return nil, err
-	}
-
-	truncated, rest, err := cutToLastMessage(scratch[:startOff+n])
-	if err != nil {
-		return nil, err
-	}
-
-	s.restBuf.Write(rest)
-
-	return truncated, nil
+	s.off += uint64(b.Len())
+	return b.Bytes(), nil
 }
 
-func cutToLastMessage(res []byte) (truncated []byte, rest []byte, err error) {
-	n := len(res)
-
-	if n == 0 {
-		return res, nil, nil
+func (s *Simple) ackCurrentChunk(addr string) error {
+	resp, err := s.cl.Get(addr + "/ack")
+	if err != nil {
+		return err
 	}
 
-	if res[n-1] == '\n' {
-		return res, nil, nil
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var b bytes.Buffer
+		io.Copy(&b, resp.Body)
+		return fmt.Errorf("ack: http code %d, %s", resp.StatusCode, b.String())
 	}
 
-	lastPos := bytes.LastIndexByte(res, '\n')
-	if lastPos < 0 {
-		return nil, nil, errBufTooSmall
-	}
-
-	return res[:lastPos+1], res[lastPos+1:], nil
+	io.Copy(ioutil.Discard, resp.Body)
+	return nil
 }
