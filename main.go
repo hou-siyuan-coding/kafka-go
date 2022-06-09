@@ -1,33 +1,41 @@
 package main
 
 import (
-	"io"
-	"net/http"
+	"flag"
+	"log"
+	"os"
 
 	"github.com/hou-siyuan-coding/kafka-go/server"
 	"github.com/hou-siyuan-coding/kafka-go/web"
 )
 
-type Server_ struct {
-}
-
-func (s *Server_) handler(w http.ResponseWriter, req *http.Request) {
-	switch req.RequestURI {
-	case "/write":
-		io.WriteString(w, "hello write!")
-	default:
-		io.WriteString(w, "hello world")
-	}
-}
-
-func (s *Server_) Serve() {
-	http.HandleFunc("/", s.handler)
-	http.ListenAndServe(":8080", nil)
-}
+var (
+	filename = flag.String("filename", "", "The filename where to put all the data")
+	inmem    = flag.Bool("inmem", false, "Whether or not use in-memory storage instead of a disk-based on")
+)
 
 func main() {
-	// fasthttp.ListenAndServe(":8080", HTTPHandler)
-	web.NewServer(&server.InMemory{}).Serve()
-	// s := Server_{}
-	// s.Serve()
+	flag.Parse()
+
+	var backend web.Storage
+
+	if *inmem {
+		backend = &server.InMemory{}
+		log.Printf("In-Memory\n")
+	} else {
+		if *filename == "" {
+			log.Fatalf("The flag `--filename` must be provided")
+		}
+
+		fp, err := os.OpenFile(*filename, os.O_CREATE|os.O_RDWR, 06666)
+		if err != nil {
+			log.Fatalf("Could not creat file %q: %s", *filename, err)
+		}
+		defer fp.Close()
+		backend = server.NewOnDisk(fp)
+		log.Printf("On-Disk\n")
+	}
+
+	log.Printf("Listening connections\n")
+	web.NewServer(backend).Serve()
 }

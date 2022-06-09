@@ -4,15 +4,22 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/hou-siyuan-coding/kafka-go/server"
 	"github.com/valyala/fasthttp"
 )
 
-type Server struct {
-	s *server.InMemory
+// Storage defines an interface for backend storage.
+// It can be either on-disk, in-memory, or other types of storage.
+type Storage interface {
+	Write(msgs []byte) error
+	Read(off uint64, maxSize uint64, w io.Writer) error
+	Ack() error
 }
 
-func NewServer(s *server.InMemory) *Server {
+type Server struct {
+	s Storage
+}
+
+func NewServer(s Storage) *Server {
 	return &Server{s: s}
 }
 
