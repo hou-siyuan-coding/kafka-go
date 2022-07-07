@@ -1,86 +1,65 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
-	"io"
+	"go/build"
 	"log"
-	"strconv"
-	"strings"
-
-	"github.com/hou-siyuan-coding/kafka-go/client"
+	"net"
+	"os"
+	"os/exec"
+	"time"
 )
 
 const maxN = 10000000
 const maxBufferSize = 1024 * 1024
 
 func main() {
-	s := client.NewSimple([]string{"http://localhost:8080"})
-
-	want, err := send(s)
-	if err != nil {
-		log.Fatalf("Send error: %v", err)
+	if err := runTest(); err != nil {
+		log.Fatalf("Test failed: %v", err)
 	}
-
-	got, err := receive(s)
-	if err != nil {
-		log.Fatalf("Receive error: %v", err)
-	}
-
-	if want != got {
-		log.Fatalf("The excepted sum %d is not equal to the actual sum %d", want, got)
-	}
-
-	log.Printf("The test passed!")
+	log.Printf("Test passed!")
 }
 
-func send(s *client.Simple) (sum int64, err error) {
-	var b bytes.Buffer
+func runTest() error {
+	log.SetFlags(log.Flags() | log.Lmicroseconds)
 
-	for i := 0; i < maxN; i++ {
-		sum += int64(i)
-		fmt.Fprintf(&b, "%d\n", i)
-
-		if b.Len() >= maxBufferSize {
-			if err = s.Send(b.Bytes()); err != nil {
-				return 0, err
-			}
-			b.Reset()
-		}
+	goPath := os.Getenv("GOPATH")
+	if goPath == "" {
+		goPath = build.Default.GOPATH
 	}
 
-	if b.Len() != 0 {
-		if err = s.Send(b.Bytes()); err != nil {
-			return 0, err
-		}
+	log.Printf("Compiling kafka-go")
+	out, err := exec.Command("go", "install", "-v", "github.com/hou-siyuan-coding/kafka-go").
+		CombinedOutput()
+	if err != nil {
+		log.Printf("Faild to build: %v", err)
+		return fmt.Errorf("compilation failed: %v (out: %s)", err, string(out))
 	}
 
-	return sum, nil
-}
+	port := 7357
+	dbPath := "/tmp/kafka.db"
+	os.Remove(dbPath)
 
-func receive(s *client.Simple) (sum int64, err error) {
-	buf := make([]byte, maxBufferSize)
+	log.Printf("Running kafka-go on port %d", port)
 
-	for {
-		res, err := s.Receive(buf)
-		if err == io.EOF {
-			return sum, nil
-		} else if err != nil {
-			return 0, err
+	cmd := exec.Command(goPath+"/bin/kafka-go", "-filename="+dbPath, fmt.Sprintf("-port=%d", port))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	cmd.Start()
+	defer cmd.Process.Kill()
+
+	log.Printf("Waiting for the port localhost:%d to open", port)
+	for i := 0; i <= 100; i++ {
+		timeout := time.Millisecond * 50
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort("localhost", fmt.Sprint(port)), timeout)
+		if err != nil {
+			time.Sleep(timeout)
+			continue
 		}
-
-		ints := strings.Split(string(res), "\n")
-		for _, str := range ints {
-			if str == "" {
-				continue
-			}
-
-			i, err := strconv.Atoi(str)
-			if err != nil {
-				return 0, err
-			}
-
-			sum += int64(i)
-		}
+		conn.Close()
+		break
 	}
+
+	return nil
 }

@@ -11,16 +11,18 @@ import (
 // It can be either on-disk, in-memory, or other types of storage.
 type Storage interface {
 	Write(msgs []byte) error
-	Read(off uint64, maxSize uint64, w io.Writer) error
-	Ack() error
+	Read(chunk string, off uint64, maxSize uint64, w io.Writer) error
+	Ack(chunk string) error
+	ListChunks() error
 }
 
 type Server struct {
-	s Storage
+	s    Storage
+	port uint
 }
 
-func NewServer(s Storage) *Server {
-	return &Server{s: s}
+func NewServer(s Storage, port uint) *Server {
+	return &Server{s: s, port: port}
 }
 
 func (s *Server) handler(ctx *fasthttp.RequestCtx) {
@@ -58,7 +60,15 @@ func (s *Server) readHandler(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	err = s.s.Read(uint64(off), uint64(maxSize), ctx)
+	chunk := ctx.QueryArgs().Peek("chunk")
+	if len(chunk) == 0 {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.WriteString("bad `chunk` GET param: chunk name must be provided")
+		return
+	}
+
+	// err = s.s.Read(string(chunk), uint64(off), uint64(maxSize), ctx)
+	err = s.s.Read(string(chunk), uint64(off), uint64(maxSize), ctx)
 	if err != nil && err != io.EOF {
 		ctx.SetStatusCode(500)
 		ctx.WriteString(err.Error())
@@ -67,12 +77,19 @@ func (s *Server) readHandler(ctx *fasthttp.RequestCtx) {
 }
 
 func (s *Server) ackHandler(ctx *fasthttp.RequestCtx) {
-	if err := s.s.Ack(); err != nil {
+	chunk := ctx.QueryArgs().Peek("chunk")
+	if len(chunk) == 0 {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.WriteString("bad `chunk` GET param: chunk name must be provided")
+		return
+	}
+
+	if err := s.s.Ack(string(chunk)); err != nil {
 		ctx.SetStatusCode(500)
 		ctx.WriteString(err.Error())
 	}
 }
 
 func (s *Server) Serve() error {
-	return fasthttp.ListenAndServe(":8080", s.handler)
+	return fasthttp.ListenAndServe(fmt.Sprint(":", s.port), s.handler)
 }

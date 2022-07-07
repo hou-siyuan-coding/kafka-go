@@ -10,7 +10,8 @@ var errBufTooSmall = errors.New("buffer is too small to fit a sigle message")
 
 // InMemory store all data in memory
 type InMemory struct {
-	buf []byte
+	buf map[string][]byte
+	// buf []byte
 }
 
 // Ack mark the current chunk as done and delete it's contents.
